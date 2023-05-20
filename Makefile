@@ -5,4 +5,4 @@ LDFLAGS += $(shell pkg-config --static --libs icu-i18n)
 testtok: testtok.cpp bpe.o
 
 clean:
-	rm -f ttok bpe.o
+	rm -f testtok bpe.o
