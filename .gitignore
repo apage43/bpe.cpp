@@ -1,4 +1,5 @@
-ttok
 *.json
 .vscode
 .ipynb_checkpoints
+testtok
+*.o
