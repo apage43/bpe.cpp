@@ -9,7 +9,7 @@ using json = nlohmann::json;
 
 int main(int argc, char** argv) {
     // https://huggingface.co/mosaicml/mpt-7b-chat/raw/main/tokenizer.json
-    std::ifstream f("mpt-7b-chat-tokenizer.json");
+    std::ifstream f("../mpt-7b-chat-tokenizer.json");
     json tokenizer_config = json::parse(f);
     json bpeconfig = tokenizer_config["model"];
 
