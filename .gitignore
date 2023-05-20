@@ -1,0 +1,4 @@
+ttok
+*.json
+.vscode
+.ipynb_checkpoints
