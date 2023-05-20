@@ -6,7 +6,6 @@
 #include <iostream>
 #include <fstream>
 #include <cstdint>
-#include <regex>
 #include <unordered_set>
 
 using json = nlohmann::json;
@@ -112,6 +111,25 @@ struct BPE
     std::unordered_map<uint32_t, std::string> reverse_vocab;
     std::unordered_map<UnicodeBigram, size_t, bigram_hash> merges;
 
+    std::vector<uint32_t> encode(const std::string &input)
+    {
+        auto normalized = normalize_nfc(input);
+        auto pretokenized = pretokenize(normalized);
+        std::vector<icu::UnicodeString> tokens_merged;
+        for (auto ptok : pretokenized)
+        {
+            bpe(ptok, tokens_merged);
+        }
+        std::vector<uint32_t> final_tokens;
+        for (auto mtok : tokens_merged)
+        {
+            std::string lookup;
+            mtok.toUTF8String(lookup);
+            final_tokens.push_back(vocab[lookup]);
+        }
+        return final_tokens;
+    }
+
     void bpe(icu::UnicodeString token_pretoked, std::vector<icu::UnicodeString> &output)
     {
         if (token_pretoked.length() < 2)
@@ -132,12 +150,6 @@ struct BPE
         }
         std::unordered_set<UnicodeBigram, bigram_hash> pairs;
         get_bigrams(words, pairs);
-        // for(auto bigram: pairs) {
-        //     std::string l,r;
-        //     bigram.first.toUTF8String(l);
-        //     bigram.second.toUTF8String(r);
-        //     std::cerr << "bigram: " << l << "," << r << std::endl;
-        // }
         while (true)
         {
             size_t min_rank = SIZE_MAX;
@@ -153,17 +165,10 @@ struct BPE
             }
             if (min_rank == SIZE_MAX)
             {
-                // std::cerr << "no merges to do" << std::endl;
                 break;
             }
             else
             {
-                // {
-                //     std::string l, r;
-                //     to_merge.first.toUTF8String(l);
-                //     to_merge.second.toUTF8String(r);
-                //     std::cerr << "merging bigram: " << l << "," << r << std::endl;
-                // }
                 auto i = words.begin();
                 while (i < words.end())
                 {
@@ -221,28 +226,15 @@ int main(int argc, char **argv)
     std::ifstream f("mpt-7b-chat-tokenizer.json");
     json tokenizer_config = json::parse(f);
     std::string test_input = "Hello, I am a hélpful assistant🤖 and I am here to help!";
-    auto normalized = normalize_nfc(test_input);
-    auto pretokenized = pretokenize(normalized);
     BPE bpe = tokenizer_config["model"].get<BPE>();
-    std::vector<icu::UnicodeString> tokens_merged;
-    for (auto ptok : pretokenized)
+    std::vector<uint32_t> final_tokens = bpe.encode(test_input);
+    std::cerr << "input: " << test_input << std::endl;
+    std::cerr << "tokens: ";
+    for (auto tok = final_tokens.begin(); tok != final_tokens.end();)
     {
-        bpe.bpe(ptok, tokens_merged);
-    }
-    std::cerr << "merged: ";
-    std::vector<uint32_t> final_tokens;
-    for (auto mtok : tokens_merged)
-    {
-        std::string lookup;
-        mtok.toUTF8String(lookup);
-        final_tokens.push_back(bpe.vocab[lookup]);
-        std::cerr << lookup << "|";
-    }
-    std::cerr << std::endl;
-    std::cerr << "tokens: [";
-    for (auto tok : final_tokens)
-    {
-        std::cerr << tok << ", ";
+        std::cerr << *tok++;
+        if (tok != final_tokens.end())
+            std::cerr << ", ";
     }
     std::cerr << std::endl;
     return 0;
