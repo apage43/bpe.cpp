@@ -108,7 +108,7 @@ void get_bigrams(const std::vector<icu::UnicodeString> &input, std::unordered_se
 struct BPE
 {
     std::unordered_map<std::string, uint32_t> vocab;
-    std::unordered_map<uint32_t, std::string> reverse_vocab;
+    std::unordered_map<uint32_t, icu::UnicodeString> reverse_vocab;
     std::unordered_map<UnicodeBigram, size_t, bigram_hash> merges;
 
     std::vector<uint32_t> encode(const std::string &input)
@@ -128,6 +128,28 @@ struct BPE
             final_tokens.push_back(vocab[lookup]);
         }
         return final_tokens;
+    }
+
+    std::string decode(const std::vector<uint32_t> &tokens, bool valid_utf8 = true)
+    {
+        std::string out;
+        for (uint32_t t : tokens)
+        {
+            icu::UnicodeString benc = reverse_vocab[t];
+            icu::StringCharacterIterator schriter(benc);
+            for (UChar32 c = schriter.first32(); schriter.hasNext(); c = schriter.next32())
+            {
+                out.push_back(codepoint_to_byte((uint32_t)c));
+            }
+        }
+        // roundtrip through ICU to replace invalid utf8 with U+FFFD
+        if (valid_utf8)
+        {
+            auto tmp = icu::UnicodeString::fromUTF8(out);
+            out.clear();
+            tmp.toUTF8String(out);
+        }
+        return out;
     }
 
     void bpe(icu::UnicodeString token_pretoked, std::vector<icu::UnicodeString> &output)
@@ -207,7 +229,8 @@ void from_json(const json &j, BPE &bpe)
     bpe.reverse_vocab.clear();
     for (auto pair : bpe.vocab)
     {
-        bpe.reverse_vocab[pair.second] = pair.first;
+        icu::UnicodeString encd = icu::UnicodeString::fromUTF8(pair.first);
+        bpe.reverse_vocab[pair.second] = encd;
     }
     size_t n = 0;
     for (auto merge : j.at("merges"))
@@ -237,5 +260,9 @@ int main(int argc, char **argv)
             std::cerr << ", ";
     }
     std::cerr << std::endl;
+    std::cerr << "decoded: " << bpe.decode(final_tokens) << std::endl;
+    std::cerr << "test invalid utf8 ending" << std::endl;
+    final_tokens.resize(11);
+    std::cerr << "decoded: " << bpe.decode(final_tokens) << std::endl;
     return 0;
 }
