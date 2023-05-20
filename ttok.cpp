@@ -200,13 +200,22 @@ class BPE {
         if (m_pretok_re == nullptr) {
             m_pretok_re = std::unique_ptr<icu::RegexPattern>(
                 icu::RegexPattern::compile(bpe_re_icustr, pe, uerror));
+            if (!U_SUCCESS(uerror))
+                throw std::runtime_error(
+                    "Compiling BPE pretokenizer regex failed");
         }
         auto uinput = icu::UnicodeString::fromUTF8(input);
         std::unique_ptr<icu::RegexMatcher> pretok_matcher(
             m_pretok_re->matcher(uinput, uerror));
         std::vector<icu::UnicodeString> pretoks;
+        if (!U_SUCCESS(uerror))
+            throw std::runtime_error(
+                "Creating BPE pretokenizer matcher failed");
         while (pretok_matcher->find()) {
             auto match = pretok_matcher->group(uerror);
+            if (!U_SUCCESS(uerror))
+                throw std::runtime_error(
+                    "Getting BPE pretokenizer regex match failed");
             std::string s;
             icu::UnicodeString out;
             match.toUTF8String(s);
