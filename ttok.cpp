@@ -47,7 +47,13 @@ typedef std::pair<icu::UnicodeString, icu::UnicodeString> UnicodeBigram;
 
 struct bigram_hash {
     std::size_t operator()(const UnicodeBigram& pair) const {
-        return pair.first.hashCode() ^ pair.second.hashCode();
+        return pair.first.hashCode() + pair.second.hashCode();
+    }
+};
+
+struct icu_hash {
+    std::size_t operator()(const icu::UnicodeString& us) const {
+        return us.hashCode();
     }
 };
 
@@ -66,9 +72,9 @@ class BPE {
    public:
     BPE(std::unordered_map<std::string, uint32_t> vocab,
         std::vector<std::string> merges) {
-        m_vocab = vocab;
         for (auto pair : vocab) {
             icu::UnicodeString encd = icu::UnicodeString::fromUTF8(pair.first);
+            m_vocab[encd] = pair.second;
             m_reverse_vocab[pair.second] = encd;
         }
         size_t n = 0;
@@ -82,6 +88,7 @@ class BPE {
             m_merges[{left, right}] = n++;
         }
     }
+
     std::vector<uint32_t> encode(const std::string& input) {
         auto normalized = normalize_nfc(input);
         auto pretokenized = pretokenize(normalized);
@@ -91,9 +98,7 @@ class BPE {
         }
         std::vector<uint32_t> final_tokens;
         for (auto mtok : tokens_merged) {
-            std::string lookup;
-            mtok.toUTF8String(lookup);
-            final_tokens.push_back(m_vocab[lookup]);
+            final_tokens.push_back(m_vocab[mtok]);
         }
         return final_tokens;
     }
@@ -117,6 +122,7 @@ class BPE {
         }
         return out;
     }
+
     // https://github.com/karpathy/minGPT/blob/37baab71b9abea1b76ab957409a1cc2fbfba8a26/mingpt/bpe.py#L95
     void bpe(icu::UnicodeString token_pretoked,
              std::vector<icu::UnicodeString>& output) {
@@ -174,7 +180,7 @@ class BPE {
     }
 
    private:
-    std::unordered_map<std::string, uint32_t> m_vocab;
+    std::unordered_map<icu::UnicodeString, uint32_t, icu_hash> m_vocab;
     std::unordered_map<uint32_t, icu::UnicodeString> m_reverse_vocab;
     std::unordered_map<UnicodeBigram, size_t, bigram_hash> m_merges;
     bpe_char_byte_table m_bs_table;
