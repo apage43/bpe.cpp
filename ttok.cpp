@@ -13,12 +13,11 @@
 using json = nlohmann::json;
 const std::string BPE_PRETOK_REGEX =
     R"('s|'t|'re|'ve|'m|'ll|'d| ?[[:alpha:]]+| ?[[:digit:]]+| ?[^\s[:alpha:][:digit:]]+|\s+(?!\S)|\s+)";
-struct bpe_char_byte_table {
-    std::array<uint32_t, 256> byte_to_codepoint;
-    std::unordered_map<uint32_t, uint8_t> codepoint_to_byte;
+class bpe_char_byte_table {
+   public:
     bpe_char_byte_table() {
         int n = 0;
-        for (uint8_t byte = 0; codepoint_to_byte.size() < 256; byte++) {
+        for (uint8_t byte = 0; m_codepoint_to_byte.size() < 256; byte++) {
             bool keep = (byte >= '!' && byte <= '~') ||
                         (byte >= 0xa1 && byte <= 0xac) ||
                         (byte >= 0xae && byte <= 0xff);
@@ -27,59 +26,24 @@ struct bpe_char_byte_table {
                 codepoint = 256 + n;
                 n++;
             }
-            byte_to_codepoint[byte] = codepoint;
-            codepoint_to_byte[codepoint] = byte;
+            m_byte_to_codepoint[byte] = codepoint;
+            m_codepoint_to_byte[codepoint] = byte;
         };
     }
+    uint32_t byte_to_codepoint(uint8_t byte) {
+        return m_byte_to_codepoint[byte];
+    }
+
+    uint8_t codepoint_to_byte(uint32_t codepoint) {
+        return m_codepoint_to_byte.at(codepoint);
+    }
+
+   private:
+    std::array<uint32_t, 256> m_byte_to_codepoint;
+    std::unordered_map<uint32_t, uint8_t> m_codepoint_to_byte;
 };
 
-const static bpe_char_byte_table bs_table;
 typedef std::pair<icu::UnicodeString, icu::UnicodeString> UnicodeBigram;
-
-uint32_t byte_to_codepoint(uint8_t byte) {
-    return bs_table.byte_to_codepoint[byte];
-}
-
-uint8_t codepoint_to_byte(uint32_t codepoint) {
-    return bs_table.codepoint_to_byte.at(codepoint);
-}
-
-std::string normalize_nfc(const std::string& input) {
-    UErrorCode uerror = U_ZERO_ERROR;
-    auto nfcnorm = icu::Normalizer2::getNFCInstance(uerror);
-    if (!U_SUCCESS(uerror))
-        throw;
-    auto icu_ti = icu::UnicodeString::fromUTF8(input);
-    std::string out;
-    nfcnorm->normalize(icu_ti, uerror).toUTF8String(out);
-    if (!U_SUCCESS(uerror))
-        throw;
-    return out;
-}
-
-std::vector<icu::UnicodeString> pretokenize(const std::string& input) {
-    UParseError pe;
-    UErrorCode uerror = U_ZERO_ERROR;
-    auto bpe_re_icustr = icu::UnicodeString::fromUTF8(BPE_PRETOK_REGEX);
-    std::unique_ptr<icu::RegexPattern> pretok_re(
-        icu::RegexPattern::compile(bpe_re_icustr, pe, uerror));
-    auto uinput = icu::UnicodeString::fromUTF8(input);
-    std::unique_ptr<icu::RegexMatcher> pretok_matcher(
-        pretok_re->matcher(uinput, uerror));
-    std::vector<icu::UnicodeString> pretoks;
-    while (pretok_matcher->find()) {
-        auto match = pretok_matcher->group(uerror);
-        std::string s;
-        icu::UnicodeString out;
-        match.toUTF8String(s);
-        for (char c : s) {
-            uint32_t codepoint = byte_to_codepoint((uint8_t)c);
-            out.append((UChar32)codepoint);
-        }
-        pretoks.push_back(out);
-    }
-    return pretoks;
-}
 
 struct bigram_hash {
     std::size_t operator()(const UnicodeBigram& pair) const {
@@ -98,12 +62,26 @@ void get_bigrams(const std::vector<icu::UnicodeString>& input,
     }
 }
 
-// https://github.com/karpathy/minGPT/blob/37baab71b9abea1b76ab957409a1cc2fbfba8a26/mingpt/bpe.py#L95
-struct BPE {
-    std::unordered_map<std::string, uint32_t> vocab;
-    std::unordered_map<uint32_t, icu::UnicodeString> reverse_vocab;
-    std::unordered_map<UnicodeBigram, size_t, bigram_hash> merges;
-
+class BPE {
+   public:
+    BPE(std::unordered_map<std::string, uint32_t> vocab,
+        std::vector<std::string> merges) {
+        m_vocab = vocab;
+        for (auto pair : vocab) {
+            icu::UnicodeString encd = icu::UnicodeString::fromUTF8(pair.first);
+            m_reverse_vocab[pair.second] = encd;
+        }
+        size_t n = 0;
+        for (auto merge : merges) {
+            std::string s_merge = merge;
+            auto spaceidx = s_merge.find(" ");
+            auto left =
+                icu::UnicodeString::fromUTF8(s_merge.substr(0, spaceidx));
+            auto right =
+                icu::UnicodeString::fromUTF8(s_merge.substr(spaceidx + 1));
+            m_merges[{left, right}] = n++;
+        }
+    }
     std::vector<uint32_t> encode(const std::string& input) {
         auto normalized = normalize_nfc(input);
         auto pretokenized = pretokenize(normalized);
@@ -115,7 +93,7 @@ struct BPE {
         for (auto mtok : tokens_merged) {
             std::string lookup;
             mtok.toUTF8String(lookup);
-            final_tokens.push_back(vocab[lookup]);
+            final_tokens.push_back(m_vocab[lookup]);
         }
         return final_tokens;
     }
@@ -124,11 +102,11 @@ struct BPE {
                        bool valid_utf8 = true) {
         std::string out;
         for (uint32_t t : tokens) {
-            icu::UnicodeString benc = reverse_vocab[t];
+            icu::UnicodeString benc = m_reverse_vocab[t];
             icu::StringCharacterIterator schriter(benc);
             for (UChar32 c = schriter.first32(); schriter.hasNext();
                  c = schriter.next32()) {
-                out.push_back(codepoint_to_byte((uint32_t)c));
+                out.push_back(m_bs_table.codepoint_to_byte((uint32_t)c));
             }
         }
         // roundtrip through ICU to replace invalid utf8 with U+FFFD
@@ -139,7 +117,7 @@ struct BPE {
         }
         return out;
     }
-
+    // https://github.com/karpathy/minGPT/blob/37baab71b9abea1b76ab957409a1cc2fbfba8a26/mingpt/bpe.py#L95
     void bpe(icu::UnicodeString token_pretoked,
              std::vector<icu::UnicodeString>& output) {
         if (token_pretoked.length() < 2) {
@@ -162,8 +140,8 @@ struct BPE {
             size_t min_rank = SIZE_MAX;
             UnicodeBigram to_merge;
             for (auto bigram : pairs) {
-                auto loc = merges.find(bigram);
-                if (loc != merges.end() && loc->second < min_rank) {
+                auto loc = m_merges.find(bigram);
+                if (loc != m_merges.end() && loc->second < min_rank) {
                     min_rank = loc->second;
                     to_merge = loc->first;
                 }
@@ -194,24 +172,53 @@ struct BPE {
         }
         output.insert(output.end(), words.begin(), words.end());
     }
-};
 
-void from_json(const json& j, BPE& bpe) {
-    j.at("vocab").get_to(bpe.vocab);
-    bpe.reverse_vocab.clear();
-    for (auto pair : bpe.vocab) {
-        icu::UnicodeString encd = icu::UnicodeString::fromUTF8(pair.first);
-        bpe.reverse_vocab[pair.second] = encd;
+   private:
+    std::unordered_map<std::string, uint32_t> m_vocab;
+    std::unordered_map<uint32_t, icu::UnicodeString> m_reverse_vocab;
+    std::unordered_map<UnicodeBigram, size_t, bigram_hash> m_merges;
+    bpe_char_byte_table m_bs_table;
+    std::unique_ptr<icu::RegexPattern> m_pretok_re;
+
+    std::string normalize_nfc(const std::string& input) {
+        UErrorCode uerror = U_ZERO_ERROR;
+        auto nfcnorm = icu::Normalizer2::getNFCInstance(uerror);
+        if (!U_SUCCESS(uerror))
+            throw std::runtime_error("could not get ICU NFC normalizer");
+        auto icu_ti = icu::UnicodeString::fromUTF8(input);
+        std::string out;
+        nfcnorm->normalize(icu_ti, uerror).toUTF8String(out);
+        if (!U_SUCCESS(uerror))
+            throw std::runtime_error("ICU string normalization failed");
+        return out;
     }
-    size_t n = 0;
-    for (auto merge : j.at("merges")) {
-        std::string s_merge = merge;
-        auto spaceidx = s_merge.find(" ");
-        auto left = icu::UnicodeString::fromUTF8(s_merge.substr(0, spaceidx));
-        auto right = icu::UnicodeString::fromUTF8(s_merge.substr(spaceidx + 1));
-        bpe.merges[{left, right}] = n++;
+
+    std::vector<icu::UnicodeString> pretokenize(const std::string& input) {
+        UParseError pe;
+        UErrorCode uerror = U_ZERO_ERROR;
+        auto bpe_re_icustr = icu::UnicodeString::fromUTF8(BPE_PRETOK_REGEX);
+        if (m_pretok_re == nullptr) {
+            m_pretok_re = std::unique_ptr<icu::RegexPattern>(
+                icu::RegexPattern::compile(bpe_re_icustr, pe, uerror));
+        }
+        auto uinput = icu::UnicodeString::fromUTF8(input);
+        std::unique_ptr<icu::RegexMatcher> pretok_matcher(
+            m_pretok_re->matcher(uinput, uerror));
+        std::vector<icu::UnicodeString> pretoks;
+        while (pretok_matcher->find()) {
+            auto match = pretok_matcher->group(uerror);
+            std::string s;
+            icu::UnicodeString out;
+            match.toUTF8String(s);
+            for (char c : s) {
+                uint32_t codepoint = m_bs_table.byte_to_codepoint((uint8_t)c);
+                out.append((UChar32)codepoint);
+            }
+            pretoks.push_back(out);
+        }
+        return pretoks;
     }
-}
+};
 
 int main(int argc, char** argv) {
     // https://huggingface.co/mosaicml/mpt-7b-chat/raw/main/tokenizer.json
@@ -219,7 +226,8 @@ int main(int argc, char** argv) {
     json tokenizer_config = json::parse(f);
     std::string test_input =
         "Hello, I am a hélpful assistant🤖 and I am here to help!";
-    BPE bpe = tokenizer_config["model"].get<BPE>();
+    json bpeconfig = tokenizer_config["model"];
+    BPE bpe(bpeconfig.at("vocab"), bpeconfig.at("merges"));
     std::vector<uint32_t> final_tokens = bpe.encode(test_input);
     std::cerr << "input: " << test_input << std::endl;
     std::cerr << "tokens: ";
