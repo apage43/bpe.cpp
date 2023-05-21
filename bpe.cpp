@@ -4,14 +4,15 @@
 #include <unicode/schriter.h>
 #include <unicode/unistr.h>
 
+#include <regex>
 #include <stdexcept>
 
 namespace bpecpp {
 const std::string BPE_PRETOK_REGEX =
     R"('s|'t|'re|'ve|'m|'ll|'d| ?[[:alpha:]]+| ?[[:digit:]]+| ?[^\s[:alpha:][:digit:]]+|\s+(?!\S)|\s+)";
 
-void get_bigrams(const std::vector<icu::UnicodeString>& input,
-                 std::unordered_set<UnicodeBigram, bigram_hash>& pairs) {
+static void get_bigrams(const std::vector<icu::UnicodeString>& input,
+                        std::unordered_set<UnicodeBigram, bigram_hash>& pairs) {
     pairs.clear();
     auto i = input.begin();
     auto prev = *i++;
@@ -170,5 +171,87 @@ std::vector<icu::UnicodeString> BPE::pretokenize(const std::string& input) {
         pretoks.push_back(out);
     }
     return pretoks;
+}
+
+static std::string regex_escape(const std::string& s) {
+    static const std::regex metacharacters(R"([\.\^\$\-\+\(\)\[\]\{\}\|\?\*])");
+    return std::regex_replace(s, metacharacters, "\\$&");
+}
+
+AdditionalVocabAdapter::AdditionalVocabAdapter(
+    std::vector<additional_vocab_item> vocab) {
+    m_addvocab = vocab;
+    std::string addedtoken_regex;
+    for (const additional_vocab_item& item : vocab) {
+        if (!addedtoken_regex.empty()) {
+            addedtoken_regex += "|";
+        }
+        addedtoken_regex += regex_escape(item.content);
+        m_token_to_id[item.content] = item.id;
+        m_id_to_token[item.id] = item.content;
+        if (item.special) {
+            m_special_ids.insert(item.id);
+        }
+    }
+    m_addedtoken_re = std::regex(addedtoken_regex);
+}
+
+std::vector<uint32_t> AdditionalVocabAdapter::encode(
+    const std::string& input,
+    BPE& bpemodel,
+    bool encode_special_tokens) {
+    if (m_addvocab.empty()) {
+        return bpemodel.encode(input);
+    }
+    std::vector<uint32_t> out;
+    std::string work = input;
+    std::smatch m;
+    while (std::regex_search(work, m, m_addedtoken_re)) {
+        auto tokloc = m_token_to_id.find(m.str());
+        if (tokloc != m_token_to_id.end()) {
+            auto tokid = tokloc->second;
+            auto prefix_decoded = bpemodel.encode(m.prefix());
+            out.insert(out.end(), prefix_decoded.begin(), prefix_decoded.end());
+            bool special = m_special_ids.find(tokid) != m_special_ids.end();
+            if (!special || encode_special_tokens) {
+                out.push_back(tokid);
+            }
+            work = m.suffix();
+        }
+    }
+    if (!work.empty()) {
+        auto rest_decoded = bpemodel.encode(work);
+        out.insert(out.end(), rest_decoded.begin(), rest_decoded.end());
+    }
+    return out;
+}
+
+std::string AdditionalVocabAdapter::decode(const std::vector<uint32_t>& tokens,
+                                           BPE& bpemodel,
+                                           bool decode_special_tokens,
+                                           bool valid_utf8) {
+    std::string out;
+    std::vector<uint32_t> to_decode;
+    for (auto tokid : tokens) {
+        auto tokloc = m_id_to_token.find(tokid);
+        if (tokloc != m_id_to_token.end()) {  // is an added token
+            if (!to_decode.empty()) {
+                out += bpemodel.decode(to_decode, valid_utf8);
+                to_decode.clear();
+            }
+            bool special = m_special_ids.find(tokid) != m_special_ids.end();
+            // only include non-special tokens unless decode_special_tokens
+            if (!special || decode_special_tokens) {
+                out += tokloc->second;
+            }
+        } else {
+            // non-added, regular token.
+            to_decode.push_back(tokid);
+        }
+    }
+    if (!to_decode.empty()) {
+        out += bpemodel.decode(to_decode, valid_utf8);
+    }
+    return out;
 }
 }  // namespace bpecpp

@@ -1,10 +1,9 @@
 #pragma once
-#include <unicode/normalizer2.h>
 #include <unicode/regex.h>
-#include <unicode/schriter.h>
 #include <unicode/unistr.h>
 
 #include <cstdint>
+#include <regex>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -76,4 +75,30 @@ class BPE {
     std::string normalize_nfc(const std::string& input);
     std::vector<icu::UnicodeString> pretokenize(const std::string& input);
 };
+
+struct additional_vocab_item {
+    uint32_t id;
+    std::string content;
+    bool special = false;
+};
+
+class AdditionalVocabAdapter {
+   public:
+    AdditionalVocabAdapter(std::vector<additional_vocab_item> vocab);
+    std::vector<uint32_t> encode(const std::string& input,
+                                 BPE& bpemodel,
+                                 bool encode_special_tokens = true);
+    std::string decode(const std::vector<uint32_t>& tokens,
+                       BPE& bpemodel,
+                       bool decode_special_tokens = true,
+                       bool valid_utf8 = true);
+
+   private:
+    std::vector<additional_vocab_item> m_addvocab;
+    std::unordered_map<std::string, uint32_t> m_token_to_id;
+    std::unordered_map<uint32_t, std::string> m_id_to_token;
+    std::unordered_set<uint32_t> m_special_ids;
+    std::regex m_addedtoken_re;
+};
+
 }  // namespace bpecpp
